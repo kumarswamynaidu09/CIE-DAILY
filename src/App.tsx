@@ -229,17 +229,25 @@ export default function App() {
     }
     setAuthError("");
     try {
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email: authEmail,
         password: authPassword,
         options: {
-          data: {
-            full_name: authName
-          }
+          data: { full_name: authName },
+          emailRedirectTo: `${window.location.origin}/`,
         }
       });
       if (error) throw error;
-      triggerToast("Account created! Check your email to confirm, or login if auto-confirmed.");
+      // If email confirmation is required, session will be null
+      if (data.session === null) {
+        setAuthError("");
+        triggerToast(`Confirmation email sent to ${authEmail}. Please check your inbox!`);
+        setView("login");
+      } else {
+        // Auto-confirmed (email confirmations disabled in Supabase)
+        // onAuthStateChange will handle navigation
+        triggerToast("Account created! Setting up your profile...");
+      }
     } catch (err: any) {
       setAuthError(err.message || "Failed to sign up.");
     }
@@ -327,46 +335,51 @@ export default function App() {
       .subscribe();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session) {
-        const isGoogle = session.user.app_metadata.provider === "google";
+      if (event === "SIGNED_OUT") {
+        localStorage.removeItem("cie_is_authenticated");
+        setView("login");
+        return;
+      }
 
-        if (!localStorage.getItem("cie_is_authenticated")) {
-          localStorage.setItem("cie_is_authenticated", "true");
-          
-          if (isGoogle) {
-            const name = session.user.user_metadata.full_name || "";
-            const avatar = session.user.user_metadata.avatar_url || "";
-            setProfileName(name);
-            setProfileAvatar(avatar);
-            setProfileBio("");
-            setProfileRole("");
-            setProfileStreak(0);
-            
-            localStorage.setItem("cie_profile_name", name);
-            localStorage.setItem("cie_profile_avatar", avatar);
-            
-            triggerToast(`Welcome back, ${name}!`);
-            setView("splash"); 
-          } else {
-            setProfileName("");
-            setProfileBio("");
-            setProfileAvatar("");
-            setProfileRole("");
-            setProfileStreak(0);
-            
-            localStorage.setItem("cie_profile_name", "");
-            localStorage.setItem("cie_profile_bio", "");
-            localStorage.setItem("cie_profile_avatar", "");
-            localStorage.setItem("cie_profile_role", "");
-            localStorage.setItem("cie_profile_streak", "0");
-            
-            triggerToast("Welcome! Please set up your profile.");
-            setIsEditingProfile(true);
-            setView("console"); // Console view handles the Reader Profile
-          }
+      if (session && (event === "SIGNED_IN" || event === "TOKEN_REFRESHED")) {
+        const isGoogle = session.user.app_metadata.provider === "google";
+        // A new signup has identities with a created_at very close to now
+        const isNewUser = session.user.identities?.[0]?.created_at === session.user.created_at;
+        const alreadyOnboarded = localStorage.getItem("cie_is_authenticated");
+
+        localStorage.setItem("cie_is_authenticated", "true");
+
+        if (isGoogle) {
+          const name = session.user.user_metadata.full_name || "";
+          const avatar = session.user.user_metadata.avatar_url || "";
+          setProfileName(name);
+          setProfileAvatar(avatar);
+          localStorage.setItem("cie_profile_name", name);
+          localStorage.setItem("cie_profile_avatar", avatar);
+          triggerToast(`Welcome${isNewUser ? "" : " back"}, ${name}!`);
+          setView("splash");
+        } else if (isNewUser && !alreadyOnboarded) {
+          // Brand new email signup — send to profile setup
+          setProfileName(session.user.user_metadata.full_name || "");
+          setProfileBio("");
+          setProfileAvatar("");
+          setProfileRole("");
+          setProfileStreak(0);
+          localStorage.setItem("cie_profile_name", session.user.user_metadata.full_name || "");
+          localStorage.setItem("cie_profile_bio", "");
+          localStorage.setItem("cie_profile_avatar", "");
+          localStorage.setItem("cie_profile_role", "");
+          localStorage.setItem("cie_profile_streak", "0");
+          triggerToast("Welcome! Please set up your profile.");
+          setIsEditingProfile(true);
+          setView("console");
         } else {
+          // Returning email user
+          triggerToast("Welcome back!");
           setView((prev) => (prev === "login" || prev === "signup" ? "home" : prev));
         }
+
+        fetchData();
       }
     });
 
