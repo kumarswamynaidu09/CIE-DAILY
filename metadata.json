@@ -1,0 +1,6 @@
+{
+  "name": "CIE Daily",
+  "description": "An elegant innovation and tech journal featuring curated articles, a live editor review console, and server-side Gemini AI summary generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
