@@ -35,23 +35,25 @@ import {
   Clock
 } from "lucide-react";
 import { Article, Author, AlertNotification, Comment } from "./types";
+import { supabase } from "../utils/supabase";
 
 export default function App() {
   // Navigation State
   const [view, setView] = useState<"login" | "signup" | "splash" | "home" | "article-detail" | "explore" | "write" | "alerts" | "console" | "bookmarks">("login");
-  
+
   // Auth Form States
   const [authEmail, setAuthEmail] = useState<string>("");
   const [authPassword, setAuthPassword] = useState<string>("");
   const [authName, setAuthName] = useState<string>("");
   const [authError, setAuthError] = useState<string>("");
 
+
   // CIE Daily Timing State
   const [dailyTiming, setDailyTiming] = useState<string>(() => {
     return localStorage.getItem("cie_daily_timing") || "08:30 AM";
   });
   const [dailyTimingEnabled, setDailyTimingEnabled] = useState<boolean>(() => {
-    return localStorage.getItem("cie_daily_timing_enabled") !== "false";
+    return localStorage.getItem("cie_daily_timing_enabled") === "true";
   });
   const [showTimePicker, setShowTimePicker] = useState<boolean>(false);
 
@@ -60,7 +62,7 @@ export default function App() {
   const [pendingArticles, setPendingArticles] = useState<Article[]>([]);
   const [alerts, setAlerts] = useState<AlertNotification[]>([]);
   const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
-  
+
   // Interaction States
   const [activeCategory, setActiveCategory] = useState<string>("Technology");
   const [searchQuery, setSearchQuery] = useState<string>("Explore");
@@ -68,7 +70,7 @@ export default function App() {
   const [currentConsoleTab, setCurrentConsoleTab] = useState<"pending" | "approved" | "rejected">("pending");
   const [commentText, setCommentText] = useState<string>("");
   const [showCommentDrawer, setShowCommentDrawer] = useState<boolean>(false);
-  
+
   // Write Form States
   const [newTitle, setNewTitle] = useState<string>("");
   const [newCategory, setNewCategory] = useState<string>("Technology");
@@ -81,10 +83,12 @@ export default function App() {
   const [generatedSummary, setGeneratedSummary] = useState<string>("");
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [customSummary, setCustomSummary] = useState<string>("");
+  const [newCoverFile, setNewCoverFile] = useState<File | null>(null);
+  const [newCoverPreview, setNewCoverPreview] = useState<string>("");
 
   // Splash Screen loading bar micro-interaction
   const [loadingProgress, setLoadingProgress] = useState<number>(0);
-  
+
   // Toast notifications for user actions
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -121,25 +125,68 @@ export default function App() {
   const [tempAvatar, setTempAvatar] = useState<string>(profileAvatar);
   const [tempRole, setTempRole] = useState<string>(profileRole);
   const [tempStreak, setTempStreak] = useState<number>(profileStreak);
+  const [tempAvatarFile, setTempAvatarFile] = useState<File | null>(null);
 
-  const saveProfileChanges = () => {
+  const saveProfileChanges = async () => {
     if (!tempName.trim()) {
       triggerToast("Name cannot be empty!");
       return;
     }
+
+    let finalAvatarUrl = tempAvatar;
+
+    if (tempAvatarFile) {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const fileExt = tempAvatarFile.name.split('.').pop();
+          const fileName = `${user.id}-${Math.random()}.${fileExt}`;
+          const { error: uploadError } = await supabase.storage
+            .from('cie-media')
+            .upload(`avatars/${fileName}`, tempAvatarFile);
+            
+          if (uploadError) throw uploadError;
+          
+          const { data: { publicUrl } } = supabase.storage
+            .from('cie-media')
+            .getPublicUrl(`avatars/${fileName}`);
+            
+          finalAvatarUrl = publicUrl;
+        }
+      } catch (err) {
+        console.error("Avatar upload failed:", err);
+        triggerToast("Avatar upload failed, using previous.");
+      }
+    }
+
+    try {
+       const { data: { user } } = await supabase.auth.getUser();
+       if (user) {
+          await supabase.from('profiles').update({
+             name: tempName,
+             bio: tempBio,
+             avatar: finalAvatarUrl,
+             role: tempRole
+          }).eq('id', user.id);
+       }
+    } catch (err) {
+       console.error("Profile update failed", err);
+    }
+
     setProfileName(tempName);
     setProfileBio(tempBio);
-    setProfileAvatar(tempAvatar);
+    setProfileAvatar(finalAvatarUrl);
     setProfileRole(tempRole);
     setProfileStreak(tempStreak);
-    
+
     localStorage.setItem("cie_profile_name", tempName);
     localStorage.setItem("cie_profile_bio", tempBio);
-    localStorage.setItem("cie_profile_avatar", tempAvatar);
+    localStorage.setItem("cie_profile_avatar", finalAvatarUrl);
     localStorage.setItem("cie_profile_role", tempRole);
     localStorage.setItem("cie_profile_streak", tempStreak.toString());
-    
+
     setIsEditingProfile(false);
+    setTempAvatarFile(null);
     triggerToast("Reader profile updated successfully!");
   };
 
@@ -151,24 +198,26 @@ export default function App() {
   };
 
   // Auth Submit Handlers
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!authEmail.trim() || !authPassword.trim()) {
       setAuthError("Please fill in all fields");
       return;
     }
-    if (authPassword.length < 6) {
-      setAuthError("Password must be at least 6 characters");
-      return;
-    }
     setAuthError("");
-    localStorage.setItem("cie_is_authenticated", "true");
-    triggerToast("Welcome back to CIE Daily!");
-    setLoadingProgress(0);
-    setView("splash");
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: authEmail,
+        password: authPassword,
+      });
+      if (error) throw error;
+      // onAuthStateChange will handle the redirect
+    } catch (err: any) {
+      setAuthError(err.message || "Failed to log in.");
+    }
   };
 
-  const handleSignup = (e: React.FormEvent) => {
+  const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!authName.trim() || !authEmail.trim() || !authPassword.trim()) {
       setAuthError("Please fill in all fields");
@@ -179,48 +228,149 @@ export default function App() {
       return;
     }
     setAuthError("");
-    localStorage.setItem("cie_is_authenticated", "true");
-    setProfileName(authName);
-    localStorage.setItem("cie_profile_name", authName);
-    triggerToast("Account created! Welcome to CIE Daily.");
-    setLoadingProgress(0);
-    setView("splash");
+    try {
+      const { error } = await supabase.auth.signUp({
+        email: authEmail,
+        password: authPassword,
+        options: {
+          data: {
+            full_name: authName
+          }
+        }
+      });
+      if (error) throw error;
+      triggerToast("Account created! Check your email to confirm, or login if auto-confirmed.");
+    } catch (err: any) {
+      setAuthError(err.message || "Failed to sign up.");
+    }
   };
 
-  const handleGoogleAuth = (mode: "login" | "signup") => {
+  const handleGoogleAuth = async (mode: "login" | "signup") => {
     setAuthError("");
-    const defaultGoogleName = "Kumarswamy Naidu";
-    const defaultGoogleEmail = "kumarswamynaidu09@gmail.com";
-    localStorage.setItem("cie_is_authenticated", "true");
-    setProfileName(defaultGoogleName);
-    localStorage.setItem("cie_profile_name", defaultGoogleName);
-    triggerToast(`Logged in with Google as ${defaultGoogleEmail}`);
-    setLoadingProgress(0);
-    setView("splash");
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+      });
+      if (error) throw error;
+    } catch (err: any) {
+      console.error("Google auth error", err);
+      setAuthError(err.message || "Failed to authenticate with Google");
+    }
   };
 
   // 1. Fetch initial dataset from the full-stack server
   const fetchData = async () => {
     try {
-      const res = await fetch("/api/articles");
-      if (res.ok) {
-        const data = await res.json();
-        setArticles(data.live);
-        setPendingArticles(data.pending);
+      const { data: articlesData } = await supabase
+        .from('articles')
+        .select(`*, author:profiles(id, name, role, avatar, bio), commentsList:comments(id, text, timestamp:created_at, author:profiles(id, name, avatar))`)
+        .order('created_at', { ascending: false });
+
+      if (articlesData) {
+        const mappedArticles = articlesData.map((row: any) => ({
+          ...row,
+          author: row.author || { id: 'unknown', name: 'Unknown', role: 'Guest', avatar: '' },
+          date: row.date || new Date(row.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+          imageUrl: row.image_url,
+          readTime: row.read_time,
+          aiSummary: row.ai_summary,
+          rejectionReason: row.rejection_reason,
+          likes: row.likes_count || 0,
+          commentsCount: row.commentsList?.length || 0,
+          commentsList: (row.commentsList || []).map((c: any) => ({
+             id: c.id,
+             text: c.text,
+             timestamp: new Date(c.timestamp).toLocaleString(),
+             authorName: c.author?.name || 'Unknown',
+             authorAvatar: c.author?.avatar || ''
+          }))
+        }));
+
+        setArticles(mappedArticles.filter(a => a.status === 'approved'));
+        setPendingArticles(mappedArticles.filter(a => a.status === 'pending' || a.status === 'rejected'));
       }
-      
-      const alertsRes = await fetch("/api/alerts");
-      if (alertsRes.ok) {
-        const alertData = await alertsRes.json();
-        setAlerts(alertData);
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: alertsData } = await supabase
+          .from('alerts')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false });
+        if (alertsData) {
+          setAlerts(alertsData.map(a => ({ ...a, timestamp: new Date(a.created_at).toLocaleString() })));
+        }
       }
     } catch (err) {
-      console.error("Failed to fetch data from API, using fallback", err);
+      console.error("Failed to fetch data", err);
     }
   };
 
   useEffect(() => {
     fetchData();
+
+    const channel = supabase
+      .channel('schema-db-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'articles' },
+        (payload) => fetchData()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'alerts' },
+        (payload) => fetchData()
+      )
+      .subscribe();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session) {
+        const isGoogle = session.user.app_metadata.provider === "google";
+
+        if (!localStorage.getItem("cie_is_authenticated")) {
+          localStorage.setItem("cie_is_authenticated", "true");
+          
+          if (isGoogle) {
+            const name = session.user.user_metadata.full_name || "";
+            const avatar = session.user.user_metadata.avatar_url || "";
+            setProfileName(name);
+            setProfileAvatar(avatar);
+            setProfileBio("");
+            setProfileRole("");
+            setProfileStreak(0);
+            
+            localStorage.setItem("cie_profile_name", name);
+            localStorage.setItem("cie_profile_avatar", avatar);
+            
+            triggerToast(`Welcome back, ${name}!`);
+            setView("splash"); 
+          } else {
+            setProfileName("");
+            setProfileBio("");
+            setProfileAvatar("");
+            setProfileRole("");
+            setProfileStreak(0);
+            
+            localStorage.setItem("cie_profile_name", "");
+            localStorage.setItem("cie_profile_bio", "");
+            localStorage.setItem("cie_profile_avatar", "");
+            localStorage.setItem("cie_profile_role", "");
+            localStorage.setItem("cie_profile_streak", "0");
+            
+            triggerToast("Welcome! Please set up your profile.");
+            setIsEditingProfile(true);
+            setView("console"); // Console view handles the Reader Profile
+          }
+        } else {
+          setView((prev) => (prev === "login" || prev === "signup" ? "home" : prev));
+        }
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   // 2. Splash Screen timer simulation
@@ -279,43 +429,63 @@ export default function App() {
 
     setIsSubmitting(true);
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Must be logged in to submit.");
+
+      let finalImageUrl = 'https://lh3.googleusercontent.com/aida-public/AB6AXuDOo8xVipyZkefG3ArvV-wZ8z0NnhWaxuxvhCEWyfCxZkcvpBVw2Bp0oyYwJwwDmZ4O76pnmY6PLP_wu7LENlitAFkUsjvA50SQ3GXZdxX2uzvlZSogTX-iXdDXJxhm9zIhbVv5H9Mpr-rBC96HKoFQLQa6PCU8hoUmbRjSF9foRevZ2Rd365PmNyuNAtJUMtxePU8ZLPXunSjbKZwNw8upsVhFJPIkJebyrP7c3IXzlg3338QnVJx2qAzKvAd-i3Eq_lgBqkndLkU';
+      if (newCoverFile) {
+        try {
+          const fileExt = newCoverFile.name.split('.').pop();
+          const fileName = `covers/${user.id}-${Math.random()}.${fileExt}`;
+          const { error: uploadError } = await supabase.storage
+            .from('cie-media')
+            .upload(fileName, newCoverFile);
+          if (uploadError) throw uploadError;
+          const { data: { publicUrl } } = supabase.storage
+            .from('cie-media')
+            .getPublicUrl(fileName);
+          finalImageUrl = publicUrl;
+        } catch (err) {
+          console.error("Cover upload failed", err);
+          triggerToast("Cover upload failed, using default.");
+        }
+      }
+
       const payload = {
+        author_id: user.id,
         title: newTitle,
         category: newCategory,
-        readTime: newReadTime,
-        authorName: newAuthorName || "Guest Writer",
-        authorRole: newAuthorRole || "Contributor",
+        read_time: newReadTime,
         content: newContent,
         tags: newTags ? newTags.split(",").map((t) => t.trim()) : [newCategory],
-        customAiSummary: customSummary || generatedSummary
+        ai_summary: customSummary || generatedSummary,
+        status: 'pending',
+        image_url: finalImageUrl,
+        date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
       };
 
-      const res = await fetch("/api/articles/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
+      const { error } = await supabase.from('articles').insert([payload]);
+      if (error) throw error;
+      
+      triggerToast("Draft submitted to Editorial Review console!");
+      
+      // Clear fields
+      setNewTitle("");
+      setNewContent("");
+      setNewTags("");
+      setNewAuthorName("");
+      setNewAuthorRole("");
+      setGeneratedSummary("");
+      setCustomSummary("");
+      setNewCoverFile(null);
+      setNewCoverPreview("");
 
-      if (res.ok) {
-        triggerToast("Draft submitted to Editorial Review console!");
-        // Clear fields
-        setNewTitle("");
-        setNewContent("");
-        setNewTags("");
-        setNewAuthorName("");
-        setNewAuthorRole("");
-        setGeneratedSummary("");
-        setCustomSummary("");
-        
-        // Refresh and route to console
-        await fetchData();
-        setView("console");
-      } else {
-        triggerToast("Submission failed.");
-      }
+      // Refresh and route to console
+      await fetchData();
+      setView("console");
     } catch (err) {
       console.error(err);
-      triggerToast("Error connecting to server.");
+      triggerToast("Error submitting to Supabase.");
     } finally {
       setIsSubmitting(false);
     }
@@ -352,69 +522,59 @@ export default function App() {
   // 5. Approve, Reject, Like, Save, or Comment on Server
   const handleArticleAction = async (articleId: string, action: string, extra: any = {}) => {
     try {
-      const res = await fetch("/api/articles/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ articleId, action, ...extra })
-      });
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user && action !== "read") {
+        triggerToast("Please log in to perform this action.");
+        return;
+      }
 
-      if (res.ok) {
-        const data = await res.json();
-        
-        // Update local arrays immediately
-        if (action === "approve") {
-          triggerToast("Article published to live feed!");
-          fetchData();
-        } else if (action === "reject") {
-          triggerToast("Draft rejected.");
-          fetchData();
-        } else if (action === "like") {
-          // Sync live article values
-          setArticles((prev) =>
-            prev.map((a) => (a.id === articleId ? { ...a, likes: data.article.likes, hasLiked: data.article.hasLiked } : a))
-          );
-          if (selectedArticle && selectedArticle.id === articleId) {
-            setSelectedArticle((prev) => prev ? { ...prev, likes: data.article.likes, hasLiked: data.article.hasLiked } : null);
-          }
-        } else if (action === "save") {
-          setArticles((prev) =>
-            prev.map((a) => (a.id === articleId ? { ...a, hasSaved: data.article.hasSaved } : a))
-          );
-          if (selectedArticle && selectedArticle.id === articleId) {
-            setSelectedArticle((prev) => prev ? { ...prev, hasSaved: data.article.hasSaved } : null);
-          }
-          triggerToast(data.article.hasSaved ? "Saved to your bookmarks" : "Removed from bookmarks");
-        } else if (action === "read") {
-          setArticles((prev) =>
-            prev.map((a) => (a.id === articleId ? { ...a, hasRead: data.article.hasRead } : a))
-          );
-          if (selectedArticle && selectedArticle.id === articleId) {
-            setSelectedArticle((prev) => prev ? { ...prev, hasRead: data.article.hasRead } : null);
-          }
-        } else if (action === "comment") {
-          // Clear comment text and reload
-          setCommentText("");
-          fetchData();
-          // Update selected article state
-          if (selectedArticle && selectedArticle.id === articleId) {
-            setSelectedArticle((prev) => {
-              if (!prev) return null;
-              const newCommentsList = [...prev.commentsList, {
-                id: `c-${Date.now()}`,
-                authorName: profileName,
-                authorAvatar: profileAvatar,
-                text: extra.text,
-                timestamp: "Just now"
-              }];
-              return {
-                ...prev,
-                commentsList: newCommentsList,
-                commentsCount: newCommentsList.length
-              };
-            });
-          }
-          triggerToast("Comment added!");
+      if (action === "approve") {
+        await supabase.from('articles').update({ status: 'approved' }).eq('id', articleId);
+        triggerToast("Article published to live feed!");
+        fetchData();
+      } else if (action === "reject") {
+        await supabase.from('articles').update({ 
+          status: 'rejected',
+          rejection_reason: extra.rejectionReason || "Does not meet guidelines."
+        }).eq('id', articleId);
+        triggerToast("Draft rejected.");
+        fetchData();
+      } else if (action === "like") {
+        const { data: existingLike } = await supabase.from('article_likes').select('id').eq('article_id', articleId).eq('user_id', user.id).maybeSingle();
+        if (existingLike) {
+          await supabase.from('article_likes').delete().eq('id', existingLike.id);
+          triggerToast("Removed like");
+        } else {
+          await supabase.from('article_likes').insert({ article_id: articleId, user_id: user.id });
+          triggerToast("Liked!");
         }
+        fetchData();
+      } else if (action === "save") {
+        const { data: existingBookmark } = await supabase.from('bookmarks').select('id').eq('article_id', articleId).eq('user_id', user.id).maybeSingle();
+        if (existingBookmark) {
+          await supabase.from('bookmarks').delete().eq('id', existingBookmark.id);
+          triggerToast("Removed from bookmarks");
+        } else {
+          await supabase.from('bookmarks').insert({ article_id: articleId, user_id: user.id });
+          triggerToast("Saved to your bookmarks");
+        }
+        fetchData();
+      } else if (action === "read") {
+        setArticles((prev) =>
+          prev.map((a) => (a.id === articleId ? { ...a, hasRead: !a.hasRead } : a))
+        );
+        if (selectedArticle && selectedArticle.id === articleId) {
+          setSelectedArticle((prev) => prev ? { ...prev, hasRead: !prev.hasRead } : null);
+        }
+      } else if (action === "comment") {
+        await supabase.from('comments').insert({
+          article_id: articleId,
+          author_id: user.id,
+          text: extra.text
+        });
+        setCommentText("");
+        triggerToast("Comment added!");
+        fetchData();
       }
     } catch (err) {
       console.error(err);
@@ -424,8 +584,11 @@ export default function App() {
 
   const markAlertsAsRead = async () => {
     try {
-      await fetch("/api/alerts/read", { method: "POST" });
-      setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        await supabase.from('alerts').update({ read: true }).eq('user_id', user.id);
+        setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
+      }
     } catch (err) {
       console.error(err);
     }
@@ -434,8 +597,8 @@ export default function App() {
   // Helper filters
   const filteredArticles = articles.filter((a) => {
     if (activeCategory === "All") return true;
-    return a.category.toLowerCase().includes(activeCategory.toLowerCase()) || 
-           a.tags.some(t => t.toLowerCase() === activeCategory.toLowerCase());
+    return a.category.toLowerCase().includes(activeCategory.toLowerCase()) ||
+      a.tags.some(t => t.toLowerCase() === activeCategory.toLowerCase());
   });
 
   const featuredArticle = articles.find((a) => a.isFeatured) || articles[0];
@@ -444,7 +607,7 @@ export default function App() {
 
   return (
     <div className="relative min-h-screen bg-[#fff8f6] font-sans text-brand-on-surface pb-24 overflow-x-hidden selection:bg-brand-primary-container selection:text-white">
-      
+
       {/* Toast Notification */}
       <AnimatePresence>
         {toastMessage && (
@@ -474,7 +637,7 @@ export default function App() {
           >
             <div className="w-full max-w-md bg-white border border-brand-outline-variant/30 rounded-3xl p-8 shadow-xl relative overflow-hidden">
               <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-brand-primary to-orange-400" />
-              
+
               {/* Brand Logo & Title */}
               <div className="flex flex-col items-center text-center mb-8">
                 <div className="w-14 h-14 bg-brand-primary rounded-2xl flex items-center justify-center shadow-lg shadow-orange-500/20 mb-3.5 rotate-12">
@@ -581,7 +744,7 @@ export default function App() {
           >
             <div className="w-full max-w-md bg-white border border-brand-outline-variant/30 rounded-3xl p-8 shadow-xl relative overflow-hidden">
               <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-brand-primary to-orange-400" />
-              
+
               {/* Brand Logo & Title */}
               <div className="flex flex-col items-center text-center mb-8">
                 <div className="w-14 h-14 bg-brand-primary rounded-2xl flex items-center justify-center shadow-lg shadow-orange-500/20 mb-3.5 rotate-12">
@@ -722,8 +885,8 @@ export default function App() {
 
               {/* Atmospheric Loading bar */}
               <div className="absolute -bottom-32 left-1/2 -translate-x-1/2 w-48 h-[2px] bg-brand-outline-variant/30 overflow-hidden rounded-full">
-                <div 
-                  className="h-full bg-brand-primary-container transition-all duration-300 ease-out" 
+                <div
+                  className="h-full bg-brand-primary-container transition-all duration-300 ease-out"
                   style={{ width: `${loadingProgress}%` }}
                 ></div>
               </div>
@@ -749,7 +912,7 @@ export default function App() {
             {/* Top AppBar */}
             <header className="fixed top-0 left-0 right-0 z-50 bg-[#fff8f6]/95 backdrop-blur-md border-b border-brand-outline-variant/30 flex justify-between items-center px-6 h-16 max-w-screen-md mx-auto">
               <div className="flex items-center gap-3">
-                <div 
+                <div
                   onClick={() => {
                     setTempName(profileName);
                     setTempBio(profileBio);
@@ -760,16 +923,16 @@ export default function App() {
                   }}
                   className="w-9 h-9 rounded-full bg-brand-surface-container-high overflow-hidden border border-brand-outline-variant/40 cursor-pointer hover:ring-2 hover:ring-brand-primary transition-all"
                 >
-                  <img 
-                    className="w-full h-full object-cover" 
-                    src={profileAvatar} 
+                  <img
+                    className="w-full h-full object-cover"
+                    src={profileAvatar}
                     alt="avatar"
                   />
                 </div>
                 <h1 className="font-headline text-xl font-bold text-brand-primary">CIE Daily</h1>
               </div>
               <div className="flex items-center gap-2">
-                <button 
+                <button
                   onClick={() => { setView("explore"); setSearchText(""); }}
                   className="p-2 hover:bg-brand-surface-container-low rounded-full transition-colors"
                 >
@@ -792,11 +955,10 @@ export default function App() {
                 <button
                   key={cat}
                   onClick={() => setActiveCategory(cat)}
-                  className={`whitespace-nowrap px-5 py-2.5 rounded-full font-headline text-xs font-bold transition-all duration-200 ${
-                    activeCategory === cat
-                      ? "bg-brand-primary text-white shadow-md shadow-orange-500/10"
-                      : "bg-brand-surface-container-low text-brand-on-surface hover:bg-brand-surface-container"
-                  }`}
+                  className={`whitespace-nowrap px-5 py-2.5 rounded-full font-headline text-xs font-bold transition-all duration-200 ${activeCategory === cat
+                    ? "bg-brand-primary text-white shadow-md shadow-orange-500/10"
+                    : "bg-brand-surface-container-low text-brand-on-surface hover:bg-brand-surface-container"
+                    }`}
                 >
                   {cat}
                 </button>
@@ -806,14 +968,14 @@ export default function App() {
             {/* Featured Story */}
             {featuredArticle && (
               <section className="mb-8">
-                <div 
+                <div
                   onClick={() => { setSelectedArticle(featuredArticle); setView("article-detail"); }}
                   className="group bg-brand-surface-container-lowest border border-brand-outline-variant/30 rounded-2xl overflow-hidden cursor-pointer hover:border-brand-primary/40 transition-all shadow-sm"
                 >
                   <div className="aspect-video relative overflow-hidden bg-brand-surface-container">
-                    <img 
-                      className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500" 
-                      src={featuredArticle.imageUrl} 
+                    <img
+                      className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500"
+                      src={featuredArticle.imageUrl}
                       alt="Featured"
                     />
                     <div className="absolute top-4 left-4 bg-brand-primary px-3 py-1.5 rounded-full">
@@ -830,8 +992,8 @@ export default function App() {
                     </p>
 
                     {/* Post Actions Footer */}
-                    <div 
-                      onClick={(e) => e.stopPropagation()} 
+                    <div
+                      onClick={(e) => e.stopPropagation()}
                       className="flex justify-between items-center border-t border-brand-outline-variant/20 pt-3.5"
                     >
                       <div className="flex items-center gap-1.5 text-[11px] text-brand-secondary">
@@ -868,11 +1030,10 @@ export default function App() {
                             handleArticleAction(featuredArticle.id, "read");
                             triggerToast(featuredArticle.hasRead ? "Marked as Unread" : "Marked as Read!");
                           }}
-                          className={`p-1.5 rounded-full transition-colors flex items-center justify-center ${
-                            featuredArticle.hasRead 
-                              ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20" 
-                              : "hover:bg-brand-surface-container text-brand-secondary hover:text-brand-primary"
-                          }`}
+                          className={`p-1.5 rounded-full transition-colors flex items-center justify-center ${featuredArticle.hasRead
+                            ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20"
+                            : "hover:bg-brand-surface-container text-brand-secondary hover:text-brand-primary"
+                            }`}
                           title={featuredArticle.hasRead ? "Mark as Unread" : "Mark as Read"}
                         >
                           <Check size={18} className={featuredArticle.hasRead ? "stroke-[2.5px]" : ""} />
@@ -892,7 +1053,7 @@ export default function App() {
               </div>
               <div className="space-y-4">
                 {trendingArticles.map((art) => (
-                  <div 
+                  <div
                     key={art.id}
                     onClick={() => { setSelectedArticle(art); setView("article-detail"); }}
                     className="bg-brand-surface-container-lowest border border-brand-outline-variant/30 rounded-2xl p-5 flex gap-4 items-start cursor-pointer hover:border-brand-primary/30 transition-all shadow-sm"
@@ -916,15 +1077,15 @@ export default function App() {
               <h4 className="font-headline text-lg font-bold text-brand-on-surface mb-4">Latest Articles</h4>
               <div className="grid grid-cols-1 gap-6">
                 {filteredArticles.map((art) => (
-                  <article 
+                  <article
                     key={art.id}
                     onClick={() => { setSelectedArticle(art); setView("article-detail"); }}
                     className="bg-brand-surface-container-lowest border border-brand-outline-variant/30 rounded-2xl overflow-hidden cursor-pointer hover:border-brand-primary/30 transition-all shadow-sm group"
                   >
                     <div className="h-48 overflow-hidden bg-brand-surface-container">
-                      <img 
-                        className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500" 
-                        src={art.imageUrl} 
+                      <img
+                        className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500"
+                        src={art.imageUrl}
                         alt={art.title}
                       />
                     </div>
@@ -932,7 +1093,7 @@ export default function App() {
                       <span className="font-headline text-[10px] text-brand-primary-container font-bold uppercase mb-2 block">{art.category}</span>
                       <h5 className="font-headline text-lg font-bold text-brand-on-surface mb-3 group-hover:text-brand-primary transition-colors leading-snug">{art.title}</h5>
                       <p className="font-sans text-sm text-brand-on-surface-variant mb-4 line-clamp-2 leading-relaxed">{art.content}</p>
-                      
+
                       <div className="flex justify-between items-center border-t border-brand-outline-variant/20 pt-4">
                         <div className="flex items-center gap-2">
                           <img className="w-6 h-6 rounded-full object-cover border border-brand-outline-variant/30" src={art.author.avatar} alt={art.author.name} />
@@ -942,8 +1103,8 @@ export default function App() {
                       </div>
 
                       {/* Post Actions Footer */}
-                      <div 
-                        onClick={(e) => e.stopPropagation()} 
+                      <div
+                        onClick={(e) => e.stopPropagation()}
                         className="flex justify-between items-center border-t border-brand-outline-variant/20 pt-3.5 mt-3.5"
                       >
                         <div className="flex items-center gap-1.5 text-[11px] text-brand-secondary">
@@ -980,11 +1141,10 @@ export default function App() {
                               handleArticleAction(art.id, "read");
                               triggerToast(art.hasRead ? "Marked as Unread" : "Marked as Read!");
                             }}
-                            className={`p-1.5 rounded-full transition-colors flex items-center justify-center ${
-                              art.hasRead 
-                                ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20" 
-                                : "hover:bg-brand-surface-container text-brand-secondary hover:text-brand-primary"
-                            }`}
+                            className={`p-1.5 rounded-full transition-colors flex items-center justify-center ${art.hasRead
+                              ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20"
+                              : "hover:bg-brand-surface-container text-brand-secondary hover:text-brand-primary"
+                              }`}
                             title={art.hasRead ? "Mark as Unread" : "Mark as Read"}
                           >
                             <Check size={18} className={art.hasRead ? "stroke-[2.5px]" : ""} />
@@ -1011,7 +1171,7 @@ export default function App() {
             {/* Header */}
             <header className="fixed top-0 left-0 right-0 z-50 bg-[#fff8f6]/95 backdrop-blur-md border-b border-brand-outline-variant/30 flex justify-between items-center px-6 h-16 max-w-screen-md mx-auto">
               <div className="flex items-center gap-4">
-                <button 
+                <button
                   onClick={() => setView("home")}
                   className="p-2 hover:bg-brand-surface-container-low rounded-full transition-colors"
                 >
@@ -1026,8 +1186,8 @@ export default function App() {
               </div>
               {/* Reading Progress Indicator */}
               <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-brand-outline-variant/20">
-                <div 
-                  className="h-full bg-brand-primary transition-all duration-75" 
+                <div
+                  className="h-full bg-brand-primary transition-all duration-75"
                   style={{ width: `${articleScrollProgress}%` }}
                 />
               </div>
@@ -1056,13 +1216,13 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <button 
+                  <button
                     onClick={() => handleArticleAction(selectedArticle.id, "save")}
                     className="p-2 hover:bg-brand-surface-container rounded-full transition-colors text-brand-secondary"
                   >
                     <Bookmark size={20} className={selectedArticle.hasSaved ? "fill-brand-primary text-brand-primary" : ""} />
                   </button>
-                  <button 
+                  <button
                     onClick={() => triggerToast("Link copied to clipboard!")}
                     className="p-2 hover:bg-brand-surface-container rounded-full transition-colors text-brand-secondary"
                   >
@@ -1113,17 +1273,16 @@ export default function App() {
 
             {/* Bottom Actions Bar */}
             <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#fff8f6]/95 backdrop-blur-md border-t border-brand-outline-variant/30 py-3.5 px-6 max-w-screen-md mx-auto flex justify-around items-center">
-              <button 
+              <button
                 onClick={() => handleArticleAction(selectedArticle.id, "like")}
-                className={`flex flex-col items-center gap-1 text-xs font-headline font-bold transition-transform active:scale-95 ${
-                  selectedArticle.hasLiked ? "text-brand-primary" : "text-brand-secondary"
-                }`}
+                className={`flex flex-col items-center gap-1 text-xs font-headline font-bold transition-transform active:scale-95 ${selectedArticle.hasLiked ? "text-brand-primary" : "text-brand-secondary"
+                  }`}
               >
                 <ThumbsUp size={20} className={selectedArticle.hasLiked ? "fill-brand-primary text-brand-primary animate-pulse" : ""} />
                 <span>{selectedArticle.likes}</span>
               </button>
 
-              <button 
+              <button
                 onClick={() => setShowCommentDrawer(!showCommentDrawer)}
                 className="flex flex-col items-center gap-1 text-brand-secondary text-xs font-headline font-bold hover:text-brand-primary transition-colors"
               >
@@ -1131,7 +1290,7 @@ export default function App() {
                 <span>{selectedArticle.commentsCount}</span>
               </button>
 
-              <button 
+              <button
                 onClick={() => handleArticleAction(selectedArticle.id, "save")}
                 className="flex flex-col items-center gap-1 text-brand-secondary text-xs font-headline font-bold hover:text-brand-primary transition-colors"
               >
@@ -1139,7 +1298,7 @@ export default function App() {
                 <span>{selectedArticle.hasSaved ? "Saved" : "Save"}</span>
               </button>
 
-              <button 
+              <button
                 onClick={() => triggerToast("Link copied to clipboard!")}
                 className="flex flex-col items-center gap-1 text-brand-secondary text-xs font-headline font-bold hover:text-brand-primary transition-colors"
               >
@@ -1151,7 +1310,7 @@ export default function App() {
             {/* Comments Section Drawer / Card (Simulated inline) */}
             <AnimatePresence>
               {showCommentDrawer && (
-                <motion.section 
+                <motion.section
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 20 }}
@@ -1185,17 +1344,17 @@ export default function App() {
 
                   {/* Add comment form */}
                   <div className="flex gap-2">
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       value={commentText}
                       onChange={(e) => setCommentText(e.target.value)}
                       placeholder="Add an insightful comment..."
                       className="flex-1 bg-brand-surface-container-low border border-brand-outline-variant/30 rounded-xl px-4 text-sm focus:outline-none focus:border-brand-primary transition-colors"
                     />
-                    <button 
+                    <button
                       onClick={() => {
                         if (commentText.trim()) {
-                          handleArticleAction(selectedArticle.id, "comment", { 
+                          handleArticleAction(selectedArticle.id, "comment", {
                             text: commentText,
                             authorName: profileName,
                             authorAvatar: profileAvatar
@@ -1240,7 +1399,7 @@ export default function App() {
                   className="w-full h-14 bg-brand-surface-container-lowest border border-brand-outline-variant/30 rounded-full pl-12 pr-12 text-sm focus:outline-none focus:border-brand-primary transition-colors placeholder:text-brand-secondary"
                 />
                 <Search size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-secondary group-focus-within:text-brand-primary transition-colors" />
-                <button 
+                <button
                   onClick={() => triggerToast("Advanced search filters enabled.")}
                   className="absolute right-4 top-1/2 -translate-y-1/2 p-1 text-brand-secondary hover:text-brand-primary transition-colors"
                 >
@@ -1254,14 +1413,14 @@ export default function App() {
               <section className="mb-12">
                 <h3 className="font-headline text-lg font-bold text-brand-on-surface mb-4">Results for "{searchText}"</h3>
                 <div className="space-y-4">
-                  {articles.filter(a => 
-                    a.title.toLowerCase().includes(searchText.toLowerCase()) || 
+                  {articles.filter(a =>
+                    a.title.toLowerCase().includes(searchText.toLowerCase()) ||
                     a.content.toLowerCase().includes(searchText.toLowerCase()) ||
                     a.category.toLowerCase().includes(searchText.toLowerCase())
                   ).length === 0 ? (
                     <div className="text-center py-12 bg-white rounded-2xl border border-brand-outline-variant/30">
                       <p className="text-brand-secondary font-headline font-semibold">No direct articles found.</p>
-                      <button 
+                      <button
                         onClick={() => { setSearchText(""); }}
                         className="mt-4 px-5 py-2.5 bg-brand-primary text-white font-headline text-xs font-bold rounded-full hover:opacity-90"
                       >
@@ -1269,12 +1428,12 @@ export default function App() {
                       </button>
                     </div>
                   ) : (
-                    articles.filter(a => 
-                      a.title.toLowerCase().includes(searchText.toLowerCase()) || 
+                    articles.filter(a =>
+                      a.title.toLowerCase().includes(searchText.toLowerCase()) ||
                       a.content.toLowerCase().includes(searchText.toLowerCase()) ||
                       a.category.toLowerCase().includes(searchText.toLowerCase())
                     ).map(art => (
-                      <div 
+                      <div
                         key={art.id}
                         onClick={() => { setSelectedArticle(art); setView("article-detail"); }}
                         className="bg-brand-surface-container-lowest border border-brand-outline-variant/30 rounded-2xl p-5 cursor-pointer hover:border-brand-primary/30 transition-all flex flex-col gap-3"
@@ -1288,8 +1447,8 @@ export default function App() {
                         </div>
 
                         {/* Post Actions Footer */}
-                        <div 
-                          onClick={(e) => e.stopPropagation()} 
+                        <div
+                          onClick={(e) => e.stopPropagation()}
                           className="flex justify-between items-center border-t border-brand-outline-variant/20 pt-3 mt-1"
                         >
                           <div className="flex items-center gap-1.5 text-[11px] text-brand-secondary">
@@ -1326,11 +1485,10 @@ export default function App() {
                                 handleArticleAction(art.id, "read");
                                 triggerToast(art.hasRead ? "Marked as Unread" : "Marked as Read!");
                               }}
-                              className={`p-1.5 rounded-full transition-colors flex items-center justify-center ${
-                                art.hasRead 
-                                  ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20" 
-                                  : "hover:bg-brand-surface-container text-brand-secondary hover:text-brand-primary"
-                              }`}
+                              className={`p-1.5 rounded-full transition-colors flex items-center justify-center ${art.hasRead
+                                ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20"
+                                : "hover:bg-brand-surface-container text-brand-secondary hover:text-brand-primary"
+                                }`}
                               title={art.hasRead ? "Mark as Unread" : "Mark as Read"}
                             >
                               <Check size={18} className={art.hasRead ? "stroke-[2.5px]" : ""} />
@@ -1351,7 +1509,7 @@ export default function App() {
                     <button onClick={() => triggerToast("Showing all topics")} className="font-headline text-xs font-bold text-brand-primary uppercase tracking-widest">View All</button>
                   </div>
 
-                  <div 
+                  <div
                     onClick={() => {
                       const atomArticle = articles.find(a => a.id === 'quantum-leap-atoms') || articles[0];
                       setSelectedArticle(atomArticle);
@@ -1360,9 +1518,9 @@ export default function App() {
                     className="relative w-full aspect-[16/10] md:aspect-[16/9] rounded-2xl overflow-hidden group cursor-pointer border border-brand-outline-variant/30 shadow-md"
                   >
                     <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent z-10" />
-                    <img 
-                      className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-700" 
-                      src="https://lh3.googleusercontent.com/aida-public/AB6AXuDiiVuAAtmGfR7HrXdevHmyezSY-jr_zmFqfCSjlWsjky6QFPNHG5En83E_3mFGUFUhJZ6kx9tttEuQC-R-fFwcOGgaYsU986mtzfuyO_t7-IEM5JpIe_dVCyDtQiv41BnfSmsZAeKk0W650sup6yrKtRTLZykHNa1uazNKS10OaGsSEAiJkh-vwcs9Zt8Rx8jM0EfsiBNsl1P78AtIPJGR8Nc_Gts-d79MryRgEo5BcH9lPD6Ed0K1aUlC5p2VZz_qmR69co05OP8" 
+                    <img
+                      className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-700"
+                      src="https://lh3.googleusercontent.com/aida-public/AB6AXuDiiVuAAtmGfR7HrXdevHmyezSY-jr_zmFqfCSjlWsjky6QFPNHG5En83E_3mFGUFUhJZ6kx9tttEuQC-R-fFwcOGgaYsU986mtzfuyO_t7-IEM5JpIe_dVCyDtQiv41BnfSmsZAeKk0W650sup6yrKtRTLZykHNa1uazNKS10OaGsSEAiJkh-vwcs9Zt8Rx8jM0EfsiBNsl1P78AtIPJGR8Nc_Gts-d79MryRgEo5BcH9lPD6Ed0K1aUlC5p2VZz_qmR69co05OP8"
                       alt="Spotlight"
                     />
                     <div className="absolute bottom-0 left-0 p-5 z-20">
@@ -1378,14 +1536,14 @@ export default function App() {
 
                   {/* Bento grids */}
                   <div className="grid grid-cols-2 gap-4 mt-4">
-                    <div 
+                    <div
                       onClick={() => triggerToast("Topic: AI Ethics")}
                       className="p-4 bg-brand-surface-container-low rounded-xl border border-brand-outline-variant/30 hover:border-brand-primary transition-all cursor-pointer"
                     >
                       <span className="text-brand-primary font-headline text-2xl font-bold opacity-30 block">01</span>
                       <h4 className="font-headline text-xs font-bold leading-snug text-brand-on-surface mt-1">AI Ethicists in the Age of LLMs</h4>
                     </div>
-                    <div 
+                    <div
                       onClick={() => triggerToast("Topic: Startup Funding")}
                       className="p-4 bg-brand-surface-container-low rounded-xl border border-brand-outline-variant/30 hover:border-brand-primary transition-all cursor-pointer"
                     >
@@ -1407,7 +1565,7 @@ export default function App() {
                       { label: "Creativity", icon: <Lightbulb size={16} /> },
                       { label: "Finance", icon: <TrendingUp size={16} /> }
                     ].map((item) => (
-                      <button 
+                      <button
                         key={item.label}
                         onClick={() => { setActiveCategory(item.label); setSearchText(item.label); }}
                         className="flex items-center gap-3 p-4 bg-brand-surface-container-lowest border border-brand-outline-variant/30 rounded-xl hover:bg-brand-primary hover:text-white transition-all duration-150 group"
@@ -1443,7 +1601,7 @@ export default function App() {
                         tagline: '"Uncovering the stories that shape our digital future."'
                       }
                     ].map((author, index) => (
-                      <div 
+                      <div
                         key={index}
                         className="flex-shrink-0 w-64 p-5 bg-white border border-brand-outline-variant/30 rounded-2xl shadow-sm hover:border-brand-primary/20 transition-all"
                       >
@@ -1457,7 +1615,7 @@ export default function App() {
                         <p className="font-sans text-[11px] text-brand-secondary line-clamp-2 leading-relaxed italic mb-4">
                           {author.tagline}
                         </p>
-                        <button 
+                        <button
                           onClick={() => triggerToast(`Following ${author.name}`)}
                           className="w-full py-2 rounded-xl border border-brand-primary text-brand-primary hover:bg-brand-primary hover:text-white transition-all font-headline text-xs font-bold"
                         >
@@ -1477,7 +1635,7 @@ export default function App() {
 
                   <div className="grid grid-cols-1 gap-4">
                     {articles.filter((a) => !a.isLatest).map((art) => (
-                      <div 
+                      <div
                         key={art.id}
                         onClick={() => { setSelectedArticle(art); setView("article-detail"); }}
                         className="bg-white border border-brand-outline-variant/30 rounded-2xl p-4 flex gap-4 items-center cursor-pointer hover:border-brand-primary/30 hover:-translate-y-0.5 active:scale-[0.99] transition-all shadow-sm"
@@ -1615,6 +1773,31 @@ export default function App() {
                 />
               </div>
 
+              <div>
+                <label className="block font-headline text-xs font-bold text-brand-on-surface uppercase mb-2">Cover Image (Optional)</label>
+                <div className="flex items-center gap-4">
+                  {newCoverPreview && (
+                    <img src={newCoverPreview} alt="Cover Preview" className="w-24 h-16 object-cover rounded-lg border border-brand-outline-variant/30" />
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        const file = e.target.files[0];
+                        if (file.size > 5 * 1024 * 1024) {
+                          triggerToast("File size must be under 5MB.");
+                          return;
+                        }
+                        setNewCoverFile(file);
+                        setNewCoverPreview(URL.createObjectURL(file));
+                      }
+                    }}
+                    className="flex-1 text-sm text-brand-secondary file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-brand-primary/10 file:text-brand-primary hover:file:bg-brand-primary/20 transition-all cursor-pointer"
+                  />
+                </div>
+              </div>
+
               <button
                 type="submit"
                 disabled={isSubmitting}
@@ -1638,7 +1821,7 @@ export default function App() {
           >
             <header className="fixed top-0 left-0 right-0 z-50 bg-[#fff8f6]/95 backdrop-blur-md border-b border-brand-outline-variant/30 flex justify-between items-center px-6 h-16 max-w-screen-md mx-auto">
               <h1 className="font-headline text-xl font-bold text-brand-primary">Alerts</h1>
-              <button 
+              <button
                 onClick={markAlertsAsRead}
                 className="font-headline text-xs font-bold text-brand-secondary hover:text-brand-primary"
               >
@@ -1651,11 +1834,10 @@ export default function App() {
                 <p className="text-center py-12 text-brand-secondary italic">No notifications yet.</p>
               ) : (
                 alerts.map((al) => (
-                  <div 
+                  <div
                     key={al.id}
-                    className={`p-4 rounded-xl border border-brand-outline-variant/30 transition-all flex items-start gap-3 shadow-sm ${
-                      al.read ? "bg-white" : "bg-brand-surface-container-low border-brand-primary/15"
-                    }`}
+                    className={`p-4 rounded-xl border border-brand-outline-variant/30 transition-all flex items-start gap-3 shadow-sm ${al.read ? "bg-white" : "bg-brand-surface-container-low border-brand-primary/15"
+                      }`}
                   >
                     <div className="mt-1">
                       {al.type === "achievement" ? (
@@ -1692,8 +1874,8 @@ export default function App() {
             {/* Header */}
             <header className="fixed top-0 left-0 right-0 z-50 bg-[#fff8f6]/95 backdrop-blur-md border-b border-brand-outline-variant/30 flex justify-between items-center px-6 h-16 max-w-screen-md mx-auto">
               <div className="flex items-center gap-2.5">
-                <button 
-                  onClick={() => setView("home")} 
+                <button
+                  onClick={() => setView("home")}
                   className="p-1.5 hover:bg-brand-surface-container rounded-full text-brand-secondary hover:text-brand-primary"
                 >
                   <ArrowLeft size={18} />
@@ -1701,10 +1883,10 @@ export default function App() {
                 <h1 className="font-headline text-lg font-bold text-brand-primary">Reader Profile</h1>
               </div>
               <div className="flex items-center gap-3">
-                <button 
-                  onClick={() => {
+                <button
+                  onClick={async () => {
                     if (isEditingProfile) {
-                      saveProfileChanges();
+                      await saveProfileChanges();
                     } else {
                       setTempName(profileName);
                       setTempBio(profileBio);
@@ -1714,22 +1896,24 @@ export default function App() {
                       setIsEditingProfile(true);
                     }
                   }}
-                  className={`px-3.5 py-1.5 rounded-full text-xs font-headline font-bold transition-all ${
-                    isEditingProfile 
-                      ? "bg-brand-primary text-white hover:opacity-95" 
-                      : "bg-brand-surface-container text-brand-on-surface hover:bg-brand-surface-container-high"
-                  }`}
+                  className={`px-3.5 py-1.5 rounded-full text-xs font-headline font-bold transition-all ${isEditingProfile
+                    ? "bg-brand-primary text-white hover:opacity-95"
+                    : "bg-brand-surface-container text-brand-on-surface hover:bg-brand-surface-container-high"
+                    }`}
                 >
                   {isEditingProfile ? "Save Profile" : "Edit Profile"}
                 </button>
                 <button
-                  onClick={() => {
-                    localStorage.removeItem("cie_is_authenticated");
-                    triggerToast("Logged out successfully");
-                    setAuthEmail("");
-                    setAuthPassword("");
-                    setAuthName("");
-                    setView("login");
+                  onClick={async () => {
+                    if (window.confirm("Are you sure you want to log out?")) {
+                      await supabase.auth.signOut();
+                      localStorage.removeItem("cie_is_authenticated");
+                      triggerToast("Logged out successfully");
+                      setAuthEmail("");
+                      setAuthPassword("");
+                      setAuthName("");
+                      setView("login");
+                    }
                   }}
                   className="p-2 hover:bg-red-500/10 text-red-600 rounded-full transition-colors flex items-center justify-center"
                   title="Log Out"
@@ -1743,29 +1927,29 @@ export default function App() {
             <div className="bg-white border border-brand-outline-variant/30 rounded-2xl p-6 shadow-sm mb-6 mt-4 relative overflow-hidden">
               {/* Background Accent Mesh */}
               <div className="absolute top-0 right-0 w-32 h-32 bg-brand-primary/5 rounded-full blur-2xl pointer-events-none"></div>
-              
+
               {isEditingProfile ? (
                 // Edit Profile Inline Form
                 <div className="space-y-4">
                   <h3 className="font-headline text-sm font-bold text-brand-primary uppercase tracking-wider">Customize Your Card</h3>
-                  
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-[11px] font-bold text-brand-secondary uppercase mb-1">Full Name</label>
-                      <input 
-                        type="text" 
-                        value={tempName} 
-                        onChange={(e) => setTempName(e.target.value)} 
+                      <input
+                        type="text"
+                        value={tempName}
+                        onChange={(e) => setTempName(e.target.value)}
                         className="w-full h-11 bg-[#fff8f6] border border-brand-outline-variant/30 rounded-xl px-3.5 text-sm focus:outline-none focus:border-brand-primary"
                         placeholder="Your full name"
                       />
                     </div>
                     <div>
                       <label className="block text-[11px] font-bold text-brand-secondary uppercase mb-1">Tagline / Role</label>
-                      <input 
-                        type="text" 
-                        value={tempRole} 
-                        onChange={(e) => setTempRole(e.target.value)} 
+                      <input
+                        type="text"
+                        value={tempRole}
+                        onChange={(e) => setTempRole(e.target.value)}
                         className="w-full h-11 bg-[#fff8f6] border border-brand-outline-variant/30 rounded-xl px-3.5 text-sm focus:outline-none focus:border-brand-primary"
                         placeholder="e.g. Technology Curator, AI Ethicist"
                       />
@@ -1773,42 +1957,31 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-bold text-brand-secondary uppercase mb-1">Avatar URL</label>
-                    <input 
-                      type="text" 
-                      value={tempAvatar} 
-                      onChange={(e) => setTempAvatar(e.target.value)} 
-                      className="w-full h-11 bg-[#fff8f6] border border-brand-outline-variant/30 rounded-xl px-3.5 text-sm focus:outline-none focus:border-brand-primary font-mono text-xs"
-                      placeholder="Image URL"
+                    <label className="block text-[11px] font-bold text-brand-secondary uppercase mb-1">Avatar Image</label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                          const file = e.target.files[0];
+                          if (file.size > 5 * 1024 * 1024) {
+                            triggerToast("File size must be under 5MB.");
+                            return;
+                          }
+                          setTempAvatarFile(file);
+                          const objectUrl = URL.createObjectURL(file);
+                          setTempAvatar(objectUrl);
+                        }
+                      }}
+                      className="w-full h-11 bg-[#fff8f6] border border-brand-outline-variant/30 rounded-xl px-3.5 text-sm focus:outline-none focus:border-brand-primary font-mono flex items-center pt-2"
                     />
-                    {/* Fast Avatar Presets */}
-                    <div className="mt-2 flex items-center gap-2">
-                      <span className="text-[10px] font-bold text-brand-secondary uppercase">Presets:</span>
-                      {[
-                        "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=256",
-                        "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=256",
-                        "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=256",
-                        "https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?auto=format&fit=crop&q=80&w=256"
-                      ].map((imgUrl, i) => (
-                        <button
-                          key={i}
-                          type="button"
-                          onClick={() => setTempAvatar(imgUrl)}
-                          className={`w-7 h-7 rounded-full overflow-hidden border ${
-                            tempAvatar === imgUrl ? "border-brand-primary ring-2 ring-brand-primary/20" : "border-brand-outline-variant/30"
-                          }`}
-                        >
-                          <img src={imgUrl} alt="Preset avatar" className="w-full h-full object-cover" />
-                        </button>
-                      ))}
-                    </div>
                   </div>
 
                   <div>
                     <label className="block text-[11px] font-bold text-brand-secondary uppercase mb-1">Bio</label>
-                    <textarea 
-                      value={tempBio} 
-                      onChange={(e) => setTempBio(e.target.value)} 
+                    <textarea
+                      value={tempBio}
+                      onChange={(e) => setTempBio(e.target.value)}
                       rows={3}
                       className="w-full bg-[#fff8f6] border border-brand-outline-variant/30 rounded-xl p-3.5 text-sm focus:outline-none focus:border-brand-primary leading-relaxed"
                       placeholder="Write a brief intro bio..."
@@ -1816,14 +1989,14 @@ export default function App() {
                   </div>
 
                   <div className="flex gap-2 justify-end pt-2">
-                    <button 
-                      onClick={() => setIsEditingProfile(false)} 
+                    <button
+                      onClick={() => setIsEditingProfile(false)}
                       className="px-4 py-2 text-xs font-headline font-bold text-brand-secondary hover:text-brand-on-surface"
                     >
                       Cancel
                     </button>
-                    <button 
-                      onClick={saveProfileChanges} 
+                    <button
+                      onClick={saveProfileChanges}
                       className="px-4 py-2 bg-brand-primary text-white text-xs font-headline font-bold rounded-xl hover:opacity-95 shadow-sm shadow-orange-500/10"
                     >
                       Save Changes
@@ -1836,7 +2009,7 @@ export default function App() {
                   <div className="relative w-20 h-20 rounded-full bg-brand-surface-container-high overflow-hidden border-2 border-brand-primary shadow-sm flex-shrink-0">
                     <img src={profileAvatar} alt={profileName} className="w-full h-full object-cover" />
                   </div>
-                  
+
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
                       <div>
@@ -1855,7 +2028,7 @@ export default function App() {
                         }
                       </span>
                     </div>
-                    
+
                     <p className="font-sans text-sm text-brand-on-surface-variant leading-relaxed mt-2.5">
                       {profileBio}
                     </p>
@@ -1863,8 +2036,8 @@ export default function App() {
                     {/* Preferred Interests Badges */}
                     <div className="mt-4 flex flex-wrap gap-1.5 justify-center md:justify-start">
                       {profileInterests.map((interest) => (
-                        <span 
-                          key={interest} 
+                        <span
+                          key={interest}
                           className="px-2.5 py-0.5 bg-brand-surface-container-low text-brand-secondary border border-brand-outline-variant/20 rounded-full text-[10px] font-headline font-semibold"
                         >
                           #{interest}
@@ -1941,14 +2114,12 @@ export default function App() {
                       localStorage.setItem("cie_daily_timing_enabled", String(nextVal));
                       triggerToast(`CIE Daily Briefing ${nextVal ? "Enabled" : "Disabled"}`);
                     }}
-                    className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                      dailyTimingEnabled ? "bg-brand-primary" : "bg-brand-outline-variant"
-                    }`}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${dailyTimingEnabled ? "bg-brand-primary" : "bg-brand-outline-variant"
+                      }`}
                   >
                     <span
-                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                        dailyTimingEnabled ? "translate-x-5" : "translate-x-0"
-                      }`}
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${dailyTimingEnabled ? "translate-x-5" : "translate-x-0"
+                        }`}
                     />
                   </button>
                 </div>
@@ -2003,11 +2174,10 @@ export default function App() {
                                 triggerToast(`Briefing time scheduled for ${preset.time}`);
                                 setShowTimePicker(false);
                               }}
-                              className={`h-9 px-3 text-xs font-semibold rounded-lg border text-left transition-all flex items-center justify-between ${
-                                dailyTiming === preset.time
-                                  ? "bg-brand-primary border-brand-primary text-white"
-                                  : "bg-transparent border-brand-outline-variant/40 text-brand-secondary hover:border-brand-primary/40"
-                              }`}
+                              className={`h-9 px-3 text-xs font-semibold rounded-lg border text-left transition-all flex items-center justify-between ${dailyTiming === preset.time
+                                ? "bg-brand-primary border-brand-primary text-white"
+                                : "bg-transparent border-brand-outline-variant/40 text-brand-secondary hover:border-brand-primary/40"
+                                }`}
                             >
                               <span>{preset.label}</span>
                               <span className="opacity-80 text-[10px]">{preset.time}</span>
@@ -2045,12 +2215,11 @@ export default function App() {
 
             {/* Profile Tabs Navigation */}
             <div className="flex border-b border-brand-outline-variant/30 mb-6 overflow-x-auto no-scrollbar">
-              <button 
-                className={`px-4 py-3 font-headline text-xs font-bold border-b-2 transition-all whitespace-nowrap flex items-center gap-1.5 ${
-                  currentProfileTab === "history"
-                    ? "text-brand-primary border-brand-primary"
-                    : "text-brand-secondary border-transparent hover:text-brand-primary"
-                }`}
+              <button
+                className={`px-4 py-3 font-headline text-xs font-bold border-b-2 transition-all whitespace-nowrap flex items-center gap-1.5 ${currentProfileTab === "history"
+                  ? "text-brand-primary border-brand-primary"
+                  : "text-brand-secondary border-transparent hover:text-brand-primary"
+                  }`}
                 onClick={() => setCurrentProfileTab("history")}
               >
                 <span>Recently Read</span>
@@ -2058,12 +2227,11 @@ export default function App() {
                   {articles.filter((a) => a.hasRead).length}
                 </span>
               </button>
-              <button 
-                className={`px-4 py-3 font-headline text-xs font-bold border-b-2 transition-all whitespace-nowrap flex items-center gap-1.5 ${
-                  currentProfileTab === "bookmarks"
-                    ? "text-brand-primary border-brand-primary"
-                    : "text-brand-secondary border-transparent hover:text-brand-primary"
-                }`}
+              <button
+                className={`px-4 py-3 font-headline text-xs font-bold border-b-2 transition-all whitespace-nowrap flex items-center gap-1.5 ${currentProfileTab === "bookmarks"
+                  ? "text-brand-primary border-brand-primary"
+                  : "text-brand-secondary border-transparent hover:text-brand-primary"
+                  }`}
                 onClick={() => setCurrentProfileTab("bookmarks")}
               >
                 <span>Bookmarks</span>
@@ -2071,12 +2239,11 @@ export default function App() {
                   {articles.filter((a) => a.hasSaved).length}
                 </span>
               </button>
-              <button 
-                className={`px-4 py-3 font-headline text-xs font-bold border-b-2 transition-all whitespace-nowrap flex items-center gap-1.5 ${
-                  currentProfileTab === "submissions"
-                    ? "text-brand-primary border-brand-primary"
-                    : "text-brand-secondary border-transparent hover:text-brand-primary"
-                }`}
+              <button
+                className={`px-4 py-3 font-headline text-xs font-bold border-b-2 transition-all whitespace-nowrap flex items-center gap-1.5 ${currentProfileTab === "submissions"
+                  ? "text-brand-primary border-brand-primary"
+                  : "text-brand-secondary border-transparent hover:text-brand-primary"
+                  }`}
                 onClick={() => setCurrentProfileTab("submissions")}
               >
                 <span>Submitted Drafts</span>
@@ -2084,12 +2251,11 @@ export default function App() {
                   {pendingArticles.length}
                 </span>
               </button>
-              <button 
-                className={`px-4 py-3 font-headline text-xs font-bold border-b-2 transition-all whitespace-nowrap flex items-center gap-1.5 ${
-                  currentProfileTab === "preferences"
-                    ? "text-brand-primary border-brand-primary"
-                    : "text-brand-secondary border-transparent hover:text-brand-primary"
-                }`}
+              <button
+                className={`px-4 py-3 font-headline text-xs font-bold border-b-2 transition-all whitespace-nowrap flex items-center gap-1.5 ${currentProfileTab === "preferences"
+                  ? "text-brand-primary border-brand-primary"
+                  : "text-brand-secondary border-transparent hover:text-brand-primary"
+                  }`}
                 onClick={() => setCurrentProfileTab("preferences")}
               >
                 <SlidersHorizontal size={13} />
@@ -2104,7 +2270,7 @@ export default function App() {
                 articles.filter((a) => a.hasRead).length === 0 ? (
                   <div className="text-center py-12 bg-white border border-brand-outline-variant/20 rounded-2xl p-6">
                     <p className="text-brand-secondary italic text-sm mb-3">No articles in your reading history yet.</p>
-                    <button 
+                    <button
                       onClick={() => setView("home")}
                       className="px-4 py-2 bg-brand-primary text-white text-xs font-headline font-bold rounded-xl hover:opacity-95 shadow-sm"
                     >
@@ -2113,8 +2279,8 @@ export default function App() {
                   </div>
                 ) : (
                   articles.filter((a) => a.hasRead).map((art) => (
-                    <div 
-                      key={art.id} 
+                    <div
+                      key={art.id}
                       onClick={() => { setSelectedArticle(art); setView("article-detail"); }}
                       className="group bg-white border border-brand-outline-variant/30 p-4 rounded-2xl flex gap-4 items-center justify-between cursor-pointer hover:border-brand-primary/20 transition-all shadow-sm"
                     >
@@ -2128,9 +2294,9 @@ export default function App() {
                         </h4>
                         <p className="font-sans text-[11px] text-brand-secondary line-clamp-1">{art.aiSummary || art.content}</p>
                       </div>
-                      
+
                       <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                        <button 
+                        <button
                           onClick={() => {
                             handleArticleAction(art.id, "read");
                             triggerToast("Marked as Unread");
@@ -2140,7 +2306,7 @@ export default function App() {
                         >
                           <Check size={16} className="stroke-[2.5px]" />
                         </button>
-                        <button 
+                        <button
                           onClick={() => handleArticleAction(art.id, "save")}
                           className="p-1.5 hover:bg-brand-surface-container rounded-full text-brand-secondary hover:text-brand-primary transition-colors"
                           title={art.hasSaved ? "Remove Bookmark" : "Save Bookmark"}
@@ -2158,7 +2324,7 @@ export default function App() {
                 articles.filter((a) => a.hasSaved).length === 0 ? (
                   <div className="text-center py-12 bg-white border border-brand-outline-variant/20 rounded-2xl p-6">
                     <p className="text-brand-secondary italic text-sm mb-3">No saved articles yet.</p>
-                    <button 
+                    <button
                       onClick={() => setView("home")}
                       className="px-4 py-2 bg-brand-primary text-white text-xs font-headline font-bold rounded-xl hover:opacity-95 shadow-sm"
                     >
@@ -2167,8 +2333,8 @@ export default function App() {
                   </div>
                 ) : (
                   articles.filter((a) => a.hasSaved).map((art) => (
-                    <div 
-                      key={art.id} 
+                    <div
+                      key={art.id}
                       onClick={() => { setSelectedArticle(art); setView("article-detail"); }}
                       className="group bg-white border border-brand-outline-variant/30 p-4 rounded-2xl flex gap-4 items-center justify-between cursor-pointer hover:border-brand-primary/20 transition-all shadow-sm"
                     >
@@ -2182,9 +2348,9 @@ export default function App() {
                         </h4>
                         <p className="font-sans text-[11px] text-brand-secondary line-clamp-1">{art.content}</p>
                       </div>
-                      
+
                       <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                        <button 
+                        <button
                           onClick={() => handleArticleAction(art.id, "save")}
                           className="p-1.5 hover:bg-brand-surface-container rounded-full text-brand-primary transition-colors"
                           title="Remove bookmark"
@@ -2203,7 +2369,7 @@ export default function App() {
                   <div className="text-center py-12 bg-white border border-brand-outline-variant/20 rounded-2xl p-6 flex flex-col items-center">
                     <PenTool size={28} className="text-brand-outline-variant mb-2" />
                     <p className="text-brand-secondary italic text-sm mb-3">You haven't submitted any article drafts yet.</p>
-                    <button 
+                    <button
                       onClick={() => setView("write")}
                       className="px-4 py-2 bg-brand-primary text-white text-xs font-headline font-bold rounded-xl hover:opacity-95 shadow-sm flex items-center gap-1.5"
                     >
@@ -2213,35 +2379,77 @@ export default function App() {
                   </div>
                 ) : (
                   pendingArticles.map((art) => (
-                    <div 
-                      key={art.id} 
+                    <div
+                      key={art.id}
                       className="bg-white border border-brand-outline-variant/30 p-5 rounded-2xl flex justify-between items-center shadow-sm"
                     >
                       <div className="flex-1 pr-4">
                         <div className="flex items-center gap-2 mb-2">
-                          <span className={`px-2 py-0.5 font-headline text-[9px] font-bold rounded-full ${
-                            art.status === "approved" 
-                              ? "bg-emerald-500/10 text-emerald-600" 
-                              : art.status === "rejected" 
-                                ? "bg-red-500/10 text-red-600" 
-                                : "bg-brand-surface-container text-brand-secondary animate-pulse"
-                          }`}>
+                          <span className={`px-2 py-0.5 font-headline text-[9px] font-bold rounded-full ${art.status === "approved"
+                            ? "bg-emerald-500/10 text-emerald-600"
+                            : art.status === "rejected"
+                              ? "bg-red-500/10 text-red-600"
+                              : "bg-brand-surface-container text-brand-secondary animate-pulse"
+                            }`}>
                             {art.status ? art.status.toUpperCase() : "PENDING REVIEW"}
                           </span>
                           <span className="font-headline text-[10px] text-brand-secondary font-bold uppercase">{art.category}</span>
                         </div>
                         <h4 className="font-headline text-base font-bold text-brand-on-surface mb-1 leading-snug">{art.title}</h4>
                         <p className="font-sans text-xs text-brand-secondary">Submitted on {art.date}</p>
+                        {art.status === "rejected" && art.rejectionReason && (
+                          <p className="font-sans text-xs font-semibold text-red-500 mt-1">Reason: {art.rejectionReason}</p>
+                        )}
                       </div>
 
-                      {art.status === "approved" && (
-                        <button 
-                          onClick={() => { setSelectedArticle(art); setView("article-detail"); }}
-                          className="p-2 hover:bg-brand-surface-container rounded-full text-brand-primary"
-                        >
-                          <ChevronRight size={20} />
-                        </button>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {art.status === "pending" && (
+                          <>
+                            <button
+                              onClick={() => handleArticleAction(art.id, "approve")}
+                              className="px-3 py-1 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-600 font-headline font-bold text-xs rounded-xl transition-all"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => {
+                                const reason = window.prompt("Provide a reason for rejection:");
+                                if (reason !== null) {
+                                  handleArticleAction(art.id, "reject", { rejectionReason: reason });
+                                }
+                              }}
+                              className="px-3 py-1 bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 font-headline font-bold text-xs rounded-xl transition-all"
+                            >
+                              Reject
+                            </button>
+                          </>
+                        )}
+                        {art.status === "rejected" && (
+                          <button
+                            onClick={() => {
+                              setNewTitle(art.title);
+                              setNewCategory(art.category);
+                              setNewReadTime(art.readTime);
+                              setNewContent(art.content);
+                              setNewTags(art.tags ? art.tags.join(", ") : "");
+                              setView("write");
+                              triggerToast("Loaded draft into editor for editing & resubmission!");
+                            }}
+                            className="px-3.5 py-1.5 bg-brand-primary/10 hover:bg-brand-primary/20 text-brand-primary font-headline font-bold text-xs rounded-xl transition-all flex items-center gap-1"
+                          >
+                            <PenTool size={12} />
+                            Edit & Resubmit
+                          </button>
+                        )}
+                        {art.status === "approved" && (
+                          <button
+                            onClick={() => { setSelectedArticle(art); setView("article-detail"); }}
+                            className="p-2 hover:bg-brand-surface-container rounded-full text-brand-primary"
+                          >
+                            <ChevronRight size={20} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))
                 )
@@ -2271,11 +2479,10 @@ export default function App() {
                               localStorage.setItem("cie_profile_interests", JSON.stringify(next));
                               triggerToast(`${isInterested ? "Removed" : "Added"} ${cat} interest`);
                             }}
-                            className={`px-3.5 py-1.5 rounded-full font-headline text-xs font-bold transition-all border ${
-                              isInterested
-                                ? "bg-brand-primary border-brand-primary text-white shadow-sm"
-                                : "bg-transparent border-brand-outline-variant/40 text-brand-secondary hover:border-brand-primary"
-                            }`}
+                            className={`px-3.5 py-1.5 rounded-full font-headline text-xs font-bold transition-all border ${isInterested
+                              ? "bg-brand-primary border-brand-primary text-white shadow-sm"
+                              : "bg-transparent border-brand-outline-variant/40 text-brand-secondary hover:border-brand-primary"
+                              }`}
                           >
                             {cat} {isInterested ? "✓" : "+"}
                           </button>
@@ -2289,15 +2496,15 @@ export default function App() {
                   {/* Settings Toggles */}
                   <div className="space-y-4">
                     <h4 className="font-headline text-sm font-bold text-brand-on-surface">Reading Preferences</h4>
-                    
+
                     <div className="flex items-center justify-between py-1">
                       <div>
                         <p className="font-headline text-xs font-bold text-brand-on-surface">Enable Dynamic AI Summaries</p>
                         <p className="text-[11px] text-brand-secondary">Pre-generate 1-sentence teasers using Gemini model</p>
                       </div>
-                      <input 
-                        type="checkbox" 
-                        defaultChecked={true} 
+                      <input
+                        type="checkbox"
+                        defaultChecked={true}
                         onChange={() => triggerToast("Preference saved!")}
                         className="w-4 h-4 accent-brand-primary"
                       />
@@ -2308,9 +2515,9 @@ export default function App() {
                         <p className="font-headline text-xs font-bold text-brand-on-surface">Weekly Scholar Digest</p>
                         <p className="text-[11px] text-brand-secondary">Deliver the highest rated innovation briefs to your inbox</p>
                       </div>
-                      <input 
-                        type="checkbox" 
-                        defaultChecked={true} 
+                      <input
+                        type="checkbox"
+                        defaultChecked={true}
                         onChange={() => triggerToast("Weekly digest preference updated!")}
                         className="w-4 h-4 accent-brand-primary"
                       />
@@ -2328,7 +2535,7 @@ export default function App() {
                           {dailyTimingEnabled ? `Scheduled for ${dailyTiming}` : "Delivery is turned off"}
                         </p>
                       </div>
-                      
+
                       {/* Sliding toggle switch */}
                       <button
                         type="button"
@@ -2338,14 +2545,12 @@ export default function App() {
                           localStorage.setItem("cie_daily_timing_enabled", String(nextVal));
                           triggerToast(`CIE Daily Briefing ${nextVal ? "Enabled" : "Disabled"}`);
                         }}
-                        className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                          dailyTimingEnabled ? "bg-brand-primary" : "bg-brand-outline-variant"
-                        }`}
+                        className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${dailyTimingEnabled ? "bg-brand-primary" : "bg-brand-outline-variant"
+                          }`}
                       >
                         <span
-                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                            dailyTimingEnabled ? "translate-x-4" : "translate-x-0"
-                          }`}
+                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${dailyTimingEnabled ? "translate-x-4" : "translate-x-0"
+                            }`}
                         />
                       </button>
                     </div>
@@ -2381,9 +2586,9 @@ export default function App() {
                         <p className="font-headline text-xs font-bold text-brand-on-surface">Compact Layout Mode</p>
                         <p className="text-[11px] text-brand-secondary">Minimize spaces to fit more intelligence per screen</p>
                       </div>
-                      <input 
-                        type="checkbox" 
-                        defaultChecked={false} 
+                      <input
+                        type="checkbox"
+                        defaultChecked={false}
                         onChange={() => triggerToast("Compact layout preference updated!")}
                         className="w-4 h-4 accent-brand-primary"
                       />
@@ -2406,13 +2611,16 @@ export default function App() {
                   </p>
                 </div>
                 <button
-                  onClick={() => {
-                    localStorage.removeItem("cie_is_authenticated");
-                    triggerToast("Logged out successfully");
-                    setAuthEmail("");
-                    setAuthPassword("");
-                    setAuthName("");
-                    setView("login");
+                  onClick={async () => {
+                    if (window.confirm("Are you sure you want to log out?")) {
+                      await supabase.auth.signOut();
+                      localStorage.removeItem("cie_is_authenticated");
+                      triggerToast("Logged out successfully");
+                      setAuthEmail("");
+                      setAuthPassword("");
+                      setAuthName("");
+                      setView("login");
+                    }
                   }}
                   className="px-6 h-11 bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 font-headline font-bold text-sm rounded-xl transition-all flex items-center justify-center gap-2"
                 >
@@ -2457,7 +2665,7 @@ export default function App() {
                   <p className="text-xs text-brand-secondary max-w-sm leading-relaxed mb-6">
                     Articles you bookmark will appear here for easy reference and offline reading.
                   </p>
-                  <button 
+                  <button
                     onClick={() => setView("home")}
                     className="px-6 py-2.5 bg-brand-primary text-white font-headline text-xs font-bold rounded-xl shadow-md shadow-orange-500/10 hover:opacity-95 active:scale-95 transition-all"
                   >
@@ -2466,15 +2674,15 @@ export default function App() {
                 </div>
               ) : (
                 articles.filter((a) => a.hasSaved).map((art) => (
-                  <article 
+                  <article
                     key={art.id}
                     onClick={() => { setSelectedArticle(art); setView("article-detail"); }}
                     className="bg-brand-surface-container-lowest border border-brand-outline-variant/30 rounded-2xl overflow-hidden cursor-pointer hover:border-brand-primary/30 transition-all shadow-sm group flex flex-col"
                   >
                     <div className="h-48 overflow-hidden bg-brand-surface-container relative">
-                      <img 
-                        className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500" 
-                        src={art.imageUrl} 
+                      <img
+                        className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500"
+                        src={art.imageUrl}
                         alt={art.title}
                       />
                       <span className="absolute top-4 right-4 bg-brand-primary text-white text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider">
@@ -2486,7 +2694,7 @@ export default function App() {
                         <h5 className="font-headline text-lg font-bold text-brand-on-surface mb-2.5 group-hover:text-brand-primary transition-colors leading-snug">{art.title}</h5>
                         <p className="font-sans text-xs text-brand-on-surface-variant mb-4 line-clamp-2 leading-relaxed">{art.content}</p>
                       </div>
-                      
+
                       <div className="border-t border-brand-outline-variant/20 pt-4 flex flex-col gap-3">
                         {/* Author section */}
                         <div className="flex justify-between items-center">
@@ -2498,8 +2706,8 @@ export default function App() {
                         </div>
 
                         {/* Post Actions Footer */}
-                        <div 
-                          onClick={(e) => e.stopPropagation()} 
+                        <div
+                          onClick={(e) => e.stopPropagation()}
                           className="flex justify-between items-center border-t border-brand-outline-variant/20 pt-3"
                         >
                           <div className="flex items-center gap-1.5 text-[11px] text-brand-secondary">
@@ -2536,11 +2744,10 @@ export default function App() {
                                 handleArticleAction(art.id, "read");
                                 triggerToast(art.hasRead ? "Marked as Unread" : "Marked as Read!");
                               }}
-                              className={`p-1.5 rounded-full transition-colors flex items-center justify-center ${
-                                art.hasRead 
-                                  ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20" 
-                                  : "hover:bg-brand-surface-container text-brand-secondary hover:text-brand-primary"
-                              }`}
+                              className={`p-1.5 rounded-full transition-colors flex items-center justify-center ${art.hasRead
+                                ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20"
+                                : "hover:bg-brand-surface-container text-brand-secondary hover:text-brand-primary"
+                                }`}
                               title={art.hasRead ? "Mark as Unread" : "Mark as Read"}
                             >
                               <Check size={18} className={art.hasRead ? "stroke-[2.5px]" : ""} />
@@ -2561,41 +2768,37 @@ export default function App() {
       {/* BOTTOM NAVIGATION BAR */}
       {view !== "splash" && view !== "login" && view !== "signup" && (
         <nav className="fixed bottom-0 left-0 right-0 z-50 flex justify-around items-center py-3.5 bg-brand-surface-container-lowest border-t border-brand-outline-variant/30 shadow-[0_-4px_20px_rgba(0,0,0,0.03)] rounded-t-2xl max-w-screen-md mx-auto">
-          <button 
+          <button
             onClick={() => setView("home")}
-            className={`flex flex-col items-center gap-1.5 transition-colors duration-200 ${
-              view === "home" || view === "article-detail" ? "text-brand-primary font-bold" : "text-brand-secondary hover:text-brand-primary"
-            }`}
+            className={`flex flex-col items-center gap-1.5 transition-colors duration-200 ${view === "home" || view === "article-detail" ? "text-brand-primary font-bold" : "text-brand-secondary hover:text-brand-primary"
+              }`}
           >
             <HomeIcon size={19} className={view === "home" ? "fill-brand-primary/10" : ""} />
             <span className="font-headline text-[10px] font-bold">Home</span>
           </button>
 
-          <button 
+          <button
             onClick={() => { setView("explore"); setSearchText(""); }}
-            className={`flex flex-col items-center gap-1.5 transition-colors duration-200 ${
-              view === "explore" ? "text-brand-primary font-bold" : "text-brand-secondary hover:text-brand-primary"
-            }`}
+            className={`flex flex-col items-center gap-1.5 transition-colors duration-200 ${view === "explore" ? "text-brand-primary font-bold" : "text-brand-secondary hover:text-brand-primary"
+              }`}
           >
             <Compass size={19} className={view === "explore" ? "fill-brand-primary/10" : ""} />
             <span className="font-headline text-[10px] font-bold">Explore</span>
           </button>
 
-          <button 
+          <button
             onClick={() => setView("write")}
-            className={`flex flex-col items-center gap-1.5 transition-colors duration-200 ${
-              view === "write" ? "text-brand-primary font-bold" : "text-brand-secondary hover:text-brand-primary"
-            }`}
+            className={`flex flex-col items-center gap-1.5 transition-colors duration-200 ${view === "write" ? "text-brand-primary font-bold" : "text-brand-secondary hover:text-brand-primary"
+              }`}
           >
             <PenTool size={19} className={view === "write" ? "fill-brand-primary/10" : ""} />
             <span className="font-headline text-[10px] font-bold">Write</span>
           </button>
 
-          <button 
+          <button
             onClick={() => setView("bookmarks")}
-            className={`flex flex-col items-center gap-1.5 transition-colors duration-200 ${
-              view === "bookmarks" ? "text-brand-primary font-bold" : "text-brand-secondary hover:text-brand-primary"
-            }`}
+            className={`flex flex-col items-center gap-1.5 transition-colors duration-200 ${view === "bookmarks" ? "text-brand-primary font-bold" : "text-brand-secondary hover:text-brand-primary"
+              }`}
           >
             <Bookmark size={19} className={view === "bookmarks" ? "fill-brand-primary text-brand-primary" : ""} />
             <span className="font-headline text-[10px] font-bold">Bookmarks</span>

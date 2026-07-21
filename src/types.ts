@@ -36,6 +36,7 @@ export interface Article {
   hasSaved?: boolean;
   hasRead?: boolean;
   status: 'pending' | 'approved' | 'rejected' | 'draft';
+  rejectionReason?: string;
   tags: string[];
 }
 
